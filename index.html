@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>Speako in the Gulf</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,650;12..96,700&family=Manrope:wght@400;500;600&display=swap">
+<style>
+  :root { --bg: oklch(1 0 0); --ink: oklch(0.208 0.042 265.755); --ink-3: oklch(0.551 0.014 264.364);
+    --line: oklch(0.922 0.005 264.532); --violet: oklch(0.5038 0.2937 285.3753); --violet-2: oklch(0.6056 0.2189 292.7172);
+    --bad: oklch(0.577 0.245 27.325); color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--ink);
+    font: 400 16px/1.6 "Manrope", Helvetica, Arial, sans-serif; padding: 24px max(16px, env(safe-area-inset-left, 0px)); }
+  .gate { width: min(420px, 100%); display: grid; gap: 18px; }
+  .brand { display: flex; align-items: center; gap: 8px; font: 700 15px/1 "Bricolage Grotesque", sans-serif; }
+  .brand i { width: 10px; height: 10px; border-radius: 50%; background: var(--violet); }
+  h1 { font: 700 34px/1.1 "Bricolage Grotesque", sans-serif; letter-spacing: -0.02em; margin: 0; }
+  p { margin: 0; color: var(--ink-3); }
+  form { display: grid; gap: 10px; margin-top: 6px; }
+  label { font-size: 13px; font-weight: 600; }
+  input { font: inherit; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; outline: none; }
+  input:focus { border-color: var(--violet); box-shadow: 0 0 0 3px oklch(0.93 0.05 290); }
+  button { font: 600 15px/1 "Manrope", sans-serif; padding: 13px; border: 0; border-radius: 10px; background: var(--violet); color: #fff; cursor: pointer; }
+  button:hover { background: var(--violet-2); }
+  button:disabled { opacity: .6; cursor: progress; }
+  .msg { min-height: 1.4em; font-size: 14px; }
+  .msg.err { color: var(--bad); }
+</style>
+</head>
+<body>
+<main class="gate">
+  <div class="brand"><i></i>Speako</div>
+  <h1>Speako in the Gulf</h1>
+  <p>A private study. Enter the password you were given.</p>
+  <form id="f">
+    <label for="pw">Password</label>
+    <input id="pw" type="password" autocomplete="current-password" required autofocus>
+    <button id="go" type="submit">Open the study</button>
+    <div class="msg" id="msg" role="status"></div>
+  </form>
+</main>
+<script>
+(() => {
+  const SALT = Uint8Array.from(atob("daN86aj9MIQ3QUu8LD/arg=="), (c) => c.charCodeAt(0));
+  const ITER = 600000;
+  const $ = (id) => document.getElementById(id);
+
+  async function deriveKey(pw) {
+    const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey({ name: "PBKDF2", salt: SALT, iterations: ITER, hash: "SHA-256" }, base,
+      { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  }
+  async function openBlob(url, key) {
+    const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
+    return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: buf.slice(0, 12) }, key, buf.slice(12)));
+  }
+
+  async function unlock(pw) {
+    const key = await deriveKey(pw);
+    const { html, map } = JSON.parse(new TextDecoder().decode(await openBlob("p.bin", key)));
+
+    // audio: decrypted on demand into blob URLs, and preloaded in the background so play starts at once
+    const cache = {}, pending = {};
+    const load = (p) => pending[p] || (pending[p] = openBlob(map[p], key)
+      .then((b) => (cache[p] = URL.createObjectURL(new Blob([b], { type: "audio/mpeg" })))));
+    window.cachedAudio = (p) => cache[p] || null;
+    window.resolveAudio = (p) => cache[p] ? Promise.resolve(cache[p]) : load(p);
+    const queue = Object.keys(map).sort((a, b) => (a.includes("/phone/") ? 1 : 0) - (b.includes("/phone/") ? 1 : 0));
+    const worker = async () => { while (queue.length) { try { await load(queue.shift()); } catch (e) { /* retried on play */ } } };
+    for (let i = 0; i < 6; i++) worker();
+
+    // swap this page for the study; inline scripts are re-created so they run
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    document.title = doc.title || document.title;
+    document.head.innerHTML = doc.head.innerHTML + '<meta name="robots" content="noindex, nofollow, noarchive">';
+    const scripts = [...doc.body.querySelectorAll("script")];
+    scripts.forEach((s) => s.remove());
+    document.body.innerHTML = doc.body.innerHTML;
+    for (const old of scripts) { const s = document.createElement("script"); s.textContent = old.textContent; document.body.appendChild(s); }
+    if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView();
+  }
+
+  async function tryOpen(pw, remembered) {
+    $("go").disabled = true; $("msg").className = "msg"; $("msg").textContent = "Unlocking…";
+    try {
+      await unlock(pw);
+      try { sessionStorage.setItem("speako-gulf-pw", pw); } catch (e) { /* storage blocked: ask again next time */ }
+    } catch (e) {
+      try { sessionStorage.removeItem("speako-gulf-pw"); } catch (_) {}
+      $("go").disabled = false;
+      $("msg").className = remembered ? "msg" : "msg err";
+      $("msg").textContent = remembered ? "" : "That password didn't work. Check it and try again.";
+    }
+  }
+  $("f").addEventListener("submit", (e) => { e.preventDefault(); tryOpen($("pw").value, false); });
+  try { const pw = sessionStorage.getItem("speako-gulf-pw"); if (pw) tryOpen(pw, true); } catch (e) { /* no storage */ }
+})();
+</script>
+</body>
+</html>
